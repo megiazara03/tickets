@@ -1,0 +1,109 @@
+name: CI/CD Pipeline - Tickets Service
+
+on:
+  push:
+    branches:
+      - develop
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-tickets-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Pruebas y Sintaxis Python
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar dependencias
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Validar sintaxis Python
+        run: |
+          python -m py_compile run.py
+          python -m compileall app/
+          echo "Validación de sintaxis Python completada."
+
+  build:
+    name: Construir Artefacto
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Empaquetar artefacto
+        run: |
+          mkdir -p dist
+          tar --exclude='./dist' --exclude='./.git' --exclude='./__pycache__' --exclude='*.pyc' -czf dist/tickets-service.tar.gz .
+
+      - name: Subir artefacto a GitHub Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: tickets-service-artifact
+          path: dist/tickets-service.tar.gz
+          retention-days: 7
+
+  deploy:
+    name: Desplegar en EC2 AWS
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar artefacto
+        uses: actions/download-artifact@v4
+        with:
+          name: tickets-service-artifact
+          path: ./dist
+
+      - name: Configurar llave SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+      - name: Copiar artefacto a EC2 via SCP
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+          USER: ${{ secrets.EC2_USER }}
+        run: |
+          scp -o StrictHostKeyChecking=no ./dist/tickets-service.tar.gz $USER@$HOST:/tmp/tickets-service.tar.gz
+
+      - name: Ejecutar despliegue en EC2 via SSH
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+          USER: ${{ secrets.EC2_USER }}
+        run: |
+          ssh -o StrictHostKeyChecking=no $USER@$HOST << 'EOF'
+            set -e
+            TARGET_DIR="$HOME/entradas-ya/tickets"
+            mkdir -p "$TARGET_DIR"
+            tar -xzf /tmp/tickets-service.tar.gz -C "$TARGET_DIR"
+            rm -f /tmp/tickets-service.tar.gz
+
+            cd "$TARGET_DIR"
+            if [ ! -d "venv" ]; then
+              python3 -m venv venv
+            fi
+            venv/bin/pip install -q -r requirements.txt
+            mkdir -p storage
+            
+            if systemctl list-unit-files | grep -q "entradasya-tickets.service"; then
+              sudo systemctl restart entradasya-tickets
+              echo "Servicio entradasya-tickets reiniciado."
+            fi
+            
+            echo "Despliegue de tickets completado con éxito."
+          EOF
