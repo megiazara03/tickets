@@ -83,7 +83,7 @@ def health():
             conn.execute("SELECT 1")
         if not PDF_DIR.is_dir():
             raise RuntimeError("no existe la carpeta de PDFs")
-        return {"status": "ok", "servicio": "tickets", "db": "ok", "pdf_dir": "ok"}
+        return {"status": "ok", "servicio": "tickets", "db": "ok", "pdf_dir": "ok", "demo": "pipeline-ok"}
     except Exception as e:
         log.error(f"Health: {e}")
         return JSONResponse(status_code=503, content={"status": "error", "servicio": "tickets", "detalle": str(e)})
